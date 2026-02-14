@@ -1,0 +1,326 @@
+// Backend: myPos.jsw
+import { getSecret } from 'wix-secrets-backend';
+import { fetch } from 'wix-fetch';
+import crypto from 'crypto';
+
+/**
+ * Signs the concatenated POST data using RSA private key.
+ * Matches PHP signPostData logic.
+ */
+async function signPostData(postDataValues, privateKey) {
+    try {
+        const concatenated = postDataValues.join('-');
+        const base64Data = Buffer.from(concatenated).toString('base64');
+        const sign = crypto.createSign('SHA256');
+        sign.update(base64Data);
+        sign.end();
+        return sign.sign(privateKey, 'base64');
+    } catch (error) {
+        console.error('myPOS: Signature error:', error);
+        throw error;
+    }
+}
+
+/**
+ * createMyPosPaymentSession
+ * Goal: Get a sessionToken (ipc_id) and build a redirect URL.
+ */
+export async function createMyPosPaymentSession(params) {
+    try {
+        if (params && params.params) params = params.params;
+
+        // 0. Normalize parameters
+        const normalizedParams = {};
+        Object.keys(params || {}).forEach(k => { normalizedParams[k.toLowerCase()] = params[k]; });
+        params = normalizedParams;
+
+        // 1. Setup Data
+        const orderId = params.orderid || Date.now().toString();
+        const amountValue = Number(params.amount || 0).toFixed(2);
+        const currency = params.currency || 'EUR';
+        const sid = params.sid || '1180724';
+        const walletNumber = params.walletnumber || '40171207943';
+        const keyIndex = (params.keyindex || 1).toString();
+        const requestToken = (params.requesttoken || 0).toString();
+        
+        const urlOk = params.url_ok || '';
+        const urlCancel = params.url_cancel || '';
+        const urlNotify = params.url_notify || '';
+        const cardTokenRequest = (params.cardtokenrequest !== undefined) ? params.cardtokenrequest.toString() : '0';
+        const paymentParamsRequired = (params.paymentparametersrequired || 1).toString();
+        const outputFormat = 'JSON';
+
+        const cartItems = Array.isArray(params.cartitems) ? params.cartitems : [];
+        const cartItemsCount = cartItems.length;
+
+        // 2. Build Signature Array (Verified PHP Order for IPCPaymentSessionCreate)
+        const sigValues = [
+            'IPCPaymentSessionCreate',
+            '1.4',
+            'EN',
+            orderId,
+            amountValue,
+            currency,
+            sid,
+            walletNumber,
+            keyIndex.toString(),
+            requestToken.toString(),
+            cartItemsCount.toString()
+        ];
+
+        cartItems.forEach(item => {
+            sigValues.push(
+                item.article || '',
+                (item.quantity || 0).toString(),
+                Number(item.price || 0).toFixed(2),
+                Number(item.amount || (item.quantity * item.price)).toFixed(2),
+                item.currency || currency
+            );
+        });
+        sigValues.push(outputFormat);
+
+        // 3. Generate Sig & Call API
+        const privateKey = await getSecret('myPos_privateKey');
+        const signature = await signPostData(sigValues, privateKey);
+
+        const body = new URLSearchParams();
+        body.append('IPCmethod', 'IPCPaymentSessionCreate');
+        body.append('IPCVersion', '1.4');
+        body.append('IPCLanguage', 'EN');
+        body.append('OrderID', orderId);
+        body.append('Amount', amountValue);
+        body.append('Currency', currency);
+        body.append('SID', sid);
+        body.append('WalletNumber', walletNumber);
+        body.append('KeyIndex', keyIndex.toString());
+        body.append('RequestToken', requestToken.toString());
+        body.append('CartItems', cartItemsCount.toString());
+
+        cartItems.forEach((item, i) => {
+            const idx = i + 1;
+            body.append(`Article_${idx}`, item.article || '');
+            body.append(`Quantity_${idx}`, (item.quantity || 0).toString());
+            body.append(`Price_${idx}`, Number(item.price || 0).toFixed(2));
+            body.append(`Amount_${idx}`, Number(item.amount || (item.quantity * item.price)).toFixed(2));
+            body.append(`Currency_${idx}`, item.currency || currency);
+        });
+
+        body.append('OutputFormat', outputFormat);
+        body.append('Signature', signature);
+
+        const endpoint = 'https://www.mypos.com/vmp/checkout';
+        const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: body.toString()
+        });
+
+        const text = await response.text();
+        try {
+            const result = JSON.parse(text);
+            if (result.SessionToken) {
+                // Return the FINAL CHECKOUT URL
+                return {
+                    success: true,
+                    sessionToken: result.SessionToken,
+                    redirectUrl: `${endpoint}?sid=${sid}&ipc_id=${result.SessionToken}`,
+                    status: result.Status
+                };
+            }
+            throw new Error(result.StatusMsg || 'No SessionToken returned');
+        } catch (e) {
+            throw new Error(`myPOS Error: ${text.substring(0, 500)}`);
+        }
+    } catch (error) {
+        console.error('myPOS Session Error:', error.message);
+        throw error;
+    }
+}
+
+/**
+ * createMyPosCheckoutUrl
+ * Standard Redirect Method (IPCPurchase)
+ * Follows the exhaustive signature order from the PHP reference.
+ */
+export async function createMyPosCheckoutUrl(params) {
+    try {
+        if (params && params.params) params = params.params;
+
+        // 0. Normalize parameters
+        const normalizedParams = {};
+        Object.keys(params || {}).forEach(k => { normalizedParams[k.toLowerCase()] = params[k]; });
+        params = normalizedParams;
+
+        // 1. Setup Data
+        const sid = params.sid || '1180724';
+        const walletNumber = params.walletnumber || '40171207943';
+        const amountValue = Number(params.amount || 0).toFixed(2);
+        const currency = params.currency || 'EUR';
+        const orderId = params.orderid || Date.now().toString();
+        
+        const urlOk = params.url_ok || '';
+        const urlCancel = params.url_cancel || '';
+        const urlNotify = params.url_notify || '';
+        const cardTokenRequest = (params.cardtokenrequest !== undefined) ? params.cardtokenrequest.toString() : '0';
+        const keyIndex = (params.keyindex || 1).toString();
+        const paymentParamsRequired = (params.paymentparametersrequired || 1).toString();
+        const paymentMethod = (params.paymentmethod || 1).toString();
+
+        const customerEmail = params.customeremail || '';
+        const customerFirstNames = params.customerfirstnames || '';
+        const customerFamilyName = params.customerfamilyname || '';
+        const customerPhone = params.customerphone || '';
+        const customerCountry = params.customercountry || '';
+        const customerCity = params.customercity || '';
+        const customerZipCode = params.customerzipcode || '';
+        const customerAddress = params.customeraddress || '';
+
+        const note = params.note || '';
+        const source = params.source || 'Wix Integration';
+        const deliveryValue = Number(params.delivery || 0).toFixed(2);
+
+        const cartItems = Array.isArray(params.cartitems) ? params.cartitems : [];
+        const cartItemsCount = cartItems.length;
+
+        // 2. Build Signature Array for IPCPurchase (STRICT DOCS TABLE ORDER)
+        // Table Order: IPCmethod, IPCVersion, IPCLanguage, SID, WalletNumber, Amount, Currency, OrderID, URL_OK, URL_Cancel, URL_Notify, CardTokenRequest, KeyIndex, PaymentParametersRequired, PaymentMethod, CustomerEmail, CustomerFirstNames, CustomerFamilyName, CustomerPhone, CustomerCountry, CustomerCity, CustomerZIPCode, CustomerAddress, Note, Source, CartItems
+        const sigValues = [
+            'IPCPurchase',
+            '1.4',
+            'EN',
+            sid,
+            walletNumber,
+            amountValue,
+            currency,
+            orderId,
+            urlOk,
+            urlCancel,
+            urlNotify,
+            cardTokenRequest,
+            keyIndex,
+            paymentParamsRequired,
+            paymentMethod,
+            customerEmail,
+            customerFirstNames,
+            customerFamilyName,
+            customerPhone,
+            customerCountry,
+            customerCity,
+            customerZipCode,
+            customerAddress,
+            note,
+            source,
+            cartItemsCount.toString()
+        ];
+
+        // Add each cart item's fields to the signature data
+        // Table/Text order: Article, Quantity, Price, Amount, Currency
+        cartItems.forEach((item, i) => {
+            sigValues.push(
+                item.article || '',
+                (item.quantity || 0).toString(),
+                Number(item.price || 0).toFixed(2),
+                Number(item.amount || (item.quantity * item.price)).toFixed(2),
+                item.currency || currency
+            );
+        });
+
+        sigValues.push(deliveryValue);
+
+        // 3. Generate SHA-256 Signature
+        const privateKey = await getSecret('myPos_privateKey');
+        const signature = await signPostData(sigValues, privateKey);
+
+        // 4. Construct URL Parameters
+        const checkoutParams = new URLSearchParams();
+        checkoutParams.append('IPCmethod', 'IPCPurchase');
+        checkoutParams.append('IPCVersion', '1.4');
+        checkoutParams.append('IPCLanguage', 'EN');
+        checkoutParams.append('SID', sid);
+        checkoutParams.append('WalletNumber', walletNumber);
+        checkoutParams.append('Amount', amountValue);
+        checkoutParams.append('Currency', currency);
+        checkoutParams.append('OrderID', orderId);
+        checkoutParams.append('URL_OK', urlOk);
+        checkoutParams.append('URL_Cancel', urlCancel);
+        checkoutParams.append('URL_Notify', urlNotify);
+        checkoutParams.append('CardTokenRequest', cardTokenRequest);
+        checkoutParams.append('KeyIndex', keyIndex);
+        checkoutParams.append('PaymentParametersRequired', paymentParamsRequired);
+        checkoutParams.append('PaymentMethod', paymentMethod);
+        checkoutParams.append('CustomerEmail', customerEmail);
+        checkoutParams.append('CustomerFirstNames', customerFirstNames);
+        checkoutParams.append('CustomerFamilyName', customerFamilyName);
+        checkoutParams.append('CustomerPhone', customerPhone);
+        checkoutParams.append('CustomerCountry', customerCountry);
+        checkoutParams.append('CustomerCity', customerCity);
+        checkoutParams.append('CustomerZIPCode', customerZipCode);
+        checkoutParams.append('CustomerAddress', customerAddress);
+        checkoutParams.append('Note', note);
+        checkoutParams.append('Source', source);
+        checkoutParams.append('CartItems', cartItemsCount.toString());
+
+        cartItems.forEach((item, i) => {
+            const idx = i + 1;
+            checkoutParams.append(`Article_${idx}`, item.article || '');
+            checkoutParams.append(`Quantity_${idx}`, (item.quantity || 0).toString());
+            checkoutParams.append(`Price_${idx}`, Number(item.price || 0).toFixed(2));
+            checkoutParams.append(`Amount_${idx}`, Number(item.amount || (item.quantity * item.price)).toFixed(2));
+            checkoutParams.append(`Currency_${idx}`, item.currency || currency);
+        });
+
+        checkoutParams.append('Delivery', deliveryValue); // Docs specify capitalized "Delivery"
+        checkoutParams.append('Signature', signature);
+
+        return {
+            success: true,
+            redirectUrl: `https://www.mypos.com/vmp/checkout?${checkoutParams.toString()}`
+        };
+    } catch (error) {
+        console.error('myPOS Checkout Error:', error.message);
+        throw error;
+    }
+}
+
+/**
+ * verifySignature
+ * Verifies myPOS notification signatures using the myPOS Public Certificate.
+ */
+export async function verifySignature(postData, signature) {
+    try {
+        const publicKey = await getSecret('myPos_publicKey');
+        if (!publicKey) return false;
+
+        const dataWithoutSignature = { ...postData };
+        delete dataWithoutSignature.Signature;
+
+        const sortedKeys = Object.keys(dataWithoutSignature).sort();
+        const values = sortedKeys.map(key => dataWithoutSignature[key]);
+        const concString = values.join('-');
+        const base64Data = Buffer.from(concString).toString('base64');
+
+        const verify = crypto.createVerify('SHA256');
+        verify.update(base64Data);
+        verify.end();
+        return verify.verify(publicKey, signature, 'base64');
+    } catch (error) {
+        console.error('myPOS Verification Error:', error);
+        return false;
+    }
+}
+
+/**
+ * handleMyPosNotify
+ * Processes the incoming IPCPurchaseNotify webhook.
+ */
+export async function handleMyPosNotify(postData) {
+    try {
+        if (!postData.Signature) throw new Error('No Signature');
+        const isValid = await verifySignature(postData, postData.Signature);
+        if (!isValid) return { success: false, error: 'Invalid Signature' };
+        return { success: true, orderId: postData.OrderID, status: postData.IPCmethod };
+    } catch (error) {
+        console.error('myPOS Notify Error:', error.message);
+        throw error;
+    }
+}
