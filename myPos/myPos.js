@@ -1,4 +1,4 @@
-import { getMyPosCheckoutUrl } from 'backend/myPos';
+import { createMyPosPaymentSession } from 'backend/myPos';
 import wixData from 'wix-data';
 
 /** Helpers */
@@ -20,9 +20,11 @@ const buildDescription = (order) => {
     return names.join(', ').trim() || 'Order Payment';
 };
 
-export const connectAccount = async (options, context) => {
-    const { credentials } = options;
-    return { credentials };
+const ensureHttps = (url) => {
+    if (!url) return '';
+    if (url.startsWith('https://')) return url;
+    if (url.startsWith('http://')) return url.replace('http://', 'https://');
+    return `https://${url}`;
 };
 
 export const createTransaction = async (options, context) => {
@@ -93,6 +95,13 @@ export const createTransaction = async (options, context) => {
     }
     const eventId = eventIds.values().next().value;
 
+    const baseSuccess = 'https://www.live-ls.com/thank-you';
+    const successQueryParams = new URLSearchParams();
+    successQueryParams.set('tid', shortId);
+    successQueryParams.set('oid', String(order?._id ?? ''));
+    successQueryParams.set('eid', eventId);
+    const successUrl = ensureHttps(`${baseSuccess}?${successQueryParams.toString()}`);
+
     // Build payment data for myPOS — mirrors the Viva approach
     const paymentData = {
         amount: Number(amount),           // myPOS expects decimal amount (e.g. 23.45)
@@ -107,17 +116,19 @@ export const createTransaction = async (options, context) => {
         customerzipcode: zipCode,
         customeraddress: address,
         note: description,
+        url_ok: successUrl,
+        url_cancel: 'https://www.live-ls.com/',
     };
 
     console.log('myPOS createTransaction: paymentData', JSON.stringify(paymentData));
 
-    // Call backend to get the myPOS hosted checkout URL
-    const paymentUrl = await getMyPosCheckoutUrl(paymentData);
+    // Call backend to get the myPOS session redirect URL
+    const result = await createMyPosPaymentSession(paymentData);
 
-    console.log('myPOS createTransaction: redirectUrl', paymentUrl);
+    console.log('myPOS createTransaction: result', JSON.stringify(result));
 
     return {
-        redirectUrl: paymentUrl,
+        redirectUrl: result.redirectUrl,
     };
 };
 
