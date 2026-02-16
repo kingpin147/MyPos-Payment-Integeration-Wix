@@ -1,6 +1,13 @@
 import { createMyPosPaymentSession } from 'backend/myPos';
 import wixData from 'wix-data';
 
+
+
+export const connectAccount = async (options, context) => {
+    const { credentials } = options;
+    return { credentials };
+};
+
 /** Helpers */
 const toTwoDecimals = (n) => Number(n).toFixed(2);
 const centsToDecimal = (v) => {
