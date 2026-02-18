@@ -1,4 +1,4 @@
-import { createMyPosPaymentSession } from 'backend/myPos';
+import { getMyPosCheckoutUrl } from 'backend/myPos';
 import wixData from 'wix-data';
 
 
@@ -129,8 +129,8 @@ export const createTransaction = async (options, context) => {
 
     console.log('myPOS createTransaction: paymentData', JSON.stringify(paymentData));
 
-    // Call backend to get the myPOS session redirect URL
-    const result = await createMyPosPaymentSession(paymentData);
+    // Call backend — builds auto-submit POST form and returns it as a redirectUrl
+    const result = await getMyPosCheckoutUrl(paymentData);
 
     console.log('myPOS createTransaction: result', JSON.stringify(result));
 

@@ -139,6 +139,135 @@ export async function createMyPosPaymentSession(params) {
 }
 
 /**
+ * createEmbeddedCheckoutSession
+ * Creates a myPOS payment session and returns the sessionToken along with
+ * a paymentParams object shaped exactly as the mypos-embedded-checkout
+ * library expects. The frontend page calls MyPOSEmbedded.createPaymentForm()
+ * using these params.
+ */
+export async function createEmbeddedCheckoutSession(params) {
+    try {
+        if (params && params.params) params = params.params;
+
+        // 0. Normalize parameter keys to lowercase
+        const normalizedParams = {};
+        Object.keys(params || {}).forEach(k => { normalizedParams[k.toLowerCase()] = params[k]; });
+        params = normalizedParams;
+
+        // 1. Static credentials
+        const sid = '1180724';
+        const walletNumber = '40171207943';
+        const keyIndex = '2';
+        const outputFormat = 'JSON';
+        const requestToken = (params.requesttoken || 0).toString();
+
+        // 2. Dynamic params
+        const orderId = params.orderid || Date.now().toString();
+        const amountValue = Number(params.amount || 0).toFixed(2);
+        const currency = params.currency || 'EUR';
+        const urlOk = params.url_ok || '';
+        const urlCancel = params.url_cancel || 'https://www.live-ls.com/';
+        const urlNotify = 'https://www.live-ls.com/_functions/transactionPaymentCreated';
+        const cartItems = Array.isArray(params.cartitems) ? params.cartitems : [];
+        const cartItemsCount = cartItems.length;
+
+        // 3. Build signature array (same order as IPCPaymentSessionCreate)
+        const sigValues = [
+            'IPCPaymentSessionCreate',
+            '1.4',
+            'EN',
+            orderId,
+            amountValue,
+            currency,
+            sid,
+            walletNumber,
+            keyIndex.toString(),
+            requestToken.toString(),
+            cartItemsCount.toString()
+        ];
+
+        cartItems.forEach(item => {
+            sigValues.push(
+                item.article || '',
+                (item.quantity || 0).toString(),
+                Number(item.price || 0).toFixed(2),
+                Number(item.amount || (item.quantity * item.price)).toFixed(2),
+                item.currency || currency
+            );
+        });
+        sigValues.push(outputFormat);
+
+        // 4. Sign & call the myPOS session API
+        const privateKey = await getSecret('myPos_privateKey');
+        const signature = await signPostData(sigValues, privateKey);
+
+        const body = new URLSearchParams();
+        body.append('IPCmethod', 'IPCPaymentSessionCreate');
+        body.append('IPCVersion', '1.4');
+        body.append('IPCLanguage', 'EN');
+        body.append('OrderID', orderId);
+        body.append('Amount', amountValue);
+        body.append('Currency', currency);
+        body.append('SID', sid);
+        body.append('WalletNumber', walletNumber);
+        body.append('KeyIndex', keyIndex.toString());
+        body.append('RequestToken', requestToken.toString());
+        body.append('CartItems', cartItemsCount.toString());
+
+        cartItems.forEach((item, i) => {
+            const idx = i + 1;
+            body.append(`Article_${idx}`, item.article || '');
+            body.append(`Quantity_${idx}`, (item.quantity || 0).toString());
+            body.append(`Price_${idx}`, Number(item.price || 0).toFixed(2));
+            body.append(`Amount_${idx}`, Number(item.amount || (item.quantity * item.price)).toFixed(2));
+            body.append(`Currency_${idx}`, item.currency || currency);
+        });
+
+        body.append('OutputFormat', outputFormat);
+        body.append('Signature', signature);
+
+        const endpoint = 'https://www.mypos.com/vmp/checkout';
+        const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: body.toString()
+        });
+
+        const text = await response.text();
+        const result = JSON.parse(text);
+
+        if (!result.SessionToken) {
+            throw new Error(result.StatusMsg || 'No SessionToken returned');
+        }
+
+        console.log('myPOS createEmbeddedCheckoutSession: SessionToken received', result.SessionToken);
+
+        // 5. Return sessionToken + paymentParams shaped for mypos-embedded-checkout
+        return {
+            success: true,
+            sessionToken: result.SessionToken,
+            status: result.Status,
+            paymentParams: {
+                sid: sid,
+                ipcLanguage: 'en',
+                walletNumber: walletNumber,
+                amount: Number(amountValue),
+                currency: currency,
+                orderID: orderId,
+                urlNotify: urlNotify,
+                urlOk: urlOk,
+                urlCancel: urlCancel,
+                keyIndex: Number(keyIndex),
+                cartItems: cartItems
+            }
+        };
+    } catch (error) {
+        console.error('myPOS Embedded Checkout Session Error:', error.message);
+        throw error;
+    }
+}
+
+/**
  * getMyPosCheckoutUrl
  * Standard Redirect Method (IPCPurchase)
  * Follows the exhaustive signature order from the PHP reference.
@@ -228,54 +357,87 @@ export async function getMyPosCheckoutUrl(params) {
 
         sigValues.push(deliveryValue);
 
-        // 3. Generate SHA-256 Signature
+        // 3. Sign the data
         const privateKey = await getSecret('myPos_privateKey');
         const signature = await signPostData(sigValues, privateKey);
 
-        // 4. Construct URL Parameters
-        const checkoutParams = new URLSearchParams();
-        checkoutParams.append('IPCmethod', 'IPCPurchase');
-        checkoutParams.append('IPCVersion', '1.4');
-        checkoutParams.append('IPCLanguage', 'EN');
-        checkoutParams.append('SID', sid);
-        checkoutParams.append('WalletNumber', walletNumber);
-        checkoutParams.append('Amount', amountValue);
-        checkoutParams.append('Currency', currency);
-        checkoutParams.append('OrderID', orderId);
-        checkoutParams.append('URL_OK', urlOk);
-        checkoutParams.append('URL_Cancel', urlCancel);
-        checkoutParams.append('URL_Notify', urlNotify);
-        checkoutParams.append('CardTokenRequest', cardTokenRequest);
-        checkoutParams.append('KeyIndex', keyIndex);
-        checkoutParams.append('PaymentParametersRequired', paymentParamsRequired);
-        checkoutParams.append('PaymentMethod', paymentMethod);
-        checkoutParams.append('CustomerEmail', customerEmail);
-        checkoutParams.append('CustomerFirstNames', customerFirstNames);
-        checkoutParams.append('CustomerFamilyName', customerFamilyName);
-        checkoutParams.append('CustomerPhone', customerPhone);
-        checkoutParams.append('CustomerCountry', customerCountry);
-        checkoutParams.append('CustomerCity', customerCity);
-        checkoutParams.append('CustomerZIPCode', customerZipCode);
-        checkoutParams.append('CustomerAddress', customerAddress);
-        checkoutParams.append('Note', note);
-        checkoutParams.append('Source', source);
-        checkoutParams.append('CartItems', cartItemsCount.toString());
+        // 4. Build postData object in the exact same order as the PHP example.
+        //    IPCPurchase requires a POST form submission — NOT a GET redirect URL.
+        //    The frontend receives this object and renders an auto-submitting hidden form.
+        const postData = {
+            IPCmethod:                'IPCPurchase',
+            IPCVersion:               '1.4',
+            IPCLanguage:              'EN',
+            SID:                      sid,
+            WalletNumber:             walletNumber,
+            Amount:                   amountValue,
+            Currency:                 currency,
+            OrderID:                  orderId,
+            URL_OK:                   urlOk,
+            URL_Cancel:               urlCancel,
+            URL_Notify:               urlNotify,
+            CardTokenRequest:         cardTokenRequest,
+            KeyIndex:                 keyIndex,
+            PaymentParametersRequired: paymentParamsRequired,
+            PaymentMethod:            paymentMethod,
+            CustomerEmail:            customerEmail,
+            CustomerFirstNames:       customerFirstNames,
+            CustomerFamilyName:       customerFamilyName,
+            CustomerPhone:            customerPhone,
+            CustomerCountry:          customerCountry,
+            CustomerCity:             customerCity,
+            CustomerZIPCode:          customerZipCode,
+            CustomerAddress:          customerAddress,
+            Note:                     note,
+            Source:                   source,
+            CartItems:                cartItemsCount.toString(),
+        };
 
+        // Append cart item fields
         cartItems.forEach((item, i) => {
             const idx = i + 1;
-            checkoutParams.append(`Article_${idx}`, item.article || '');
-            checkoutParams.append(`Quantity_${idx}`, (item.quantity || 0).toString());
-            checkoutParams.append(`Price_${idx}`, Number(item.price || 0).toFixed(2));
-            checkoutParams.append(`Amount_${idx}`, Number(item.amount || (item.quantity * item.price)).toFixed(2));
-            checkoutParams.append(`Currency_${idx}`, item.currency || currency);
+            postData[`Article_${idx}`]  = item.article || '';
+            postData[`Quantity_${idx}`] = (item.quantity || 0).toString();
+            postData[`Price_${idx}`]    = Number(item.price || 0).toFixed(2);
+            postData[`Amount_${idx}`]   = Number(item.amount || (item.quantity * item.price)).toFixed(2);
+            postData[`Currency_${idx}`] = item.currency || currency;
         });
 
-        checkoutParams.append('Delivery', deliveryValue); 
-        checkoutParams.append('Signature', signature);
+        postData['Delivery']  = deliveryValue;
+        postData['Signature'] = signature;
+
+        const endpoint = 'https://www.mypos.com/vmp/checkout';
+
+        // Build auto-submitting hidden form — identical to the PHP example.
+        // All fields become <input type="hidden"> and the form POSTs on page load.
+        const fields = Object.entries(postData)
+            .map(([k, v]) =>
+                `<input type="hidden" name="${k}" value="${String(v).replace(/"/g, '&quot;')}">`
+            )
+            .join('\n    ');
+
+        const html = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Redirecting to myPOS Checkout...</title>
+</head>
+<body>
+  <p>Redirecting to payment page...</p>
+  <form id="myposForm" method="post" action="${endpoint}">
+    ${fields}
+    <noscript><button type="submit">Continue</button></noscript>
+  </form>
+  <script>document.getElementById('myposForm').submit();<\/script>
+</body>
+</html>`;
+
+        // Encode as data: URI — Wix opens this page which immediately POSTs to myPOS
+        const redirectUrl = 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
 
         return {
-            success: true,
-            redirectUrl: `https://www.mypos.com/vmp/checkout?${checkoutParams.toString()}`
+            success:     true,
+            redirectUrl: redirectUrl
         };
     } catch (error) {
         console.error('myPOS Checkout Error:', error.message);
@@ -324,4 +486,65 @@ export async function handleMyPosNotify(postData) {
         console.error('myPOS Notify Error:', error.message);
         throw error;
     }
+}
+
+/**
+ * initEmbeddedCheckout
+ * Standalone embedded checkout — mirrors the client's example exactly.
+ * Defines paymentParams and callbackParams, then calls
+ * MyPOSEmbedded.createPaymentForm() with a custom Pay button.
+ *
+ * @param {string} urlOk     - Redirect URL on successful payment
+ * @param {string} urlCancel - Redirect URL on cancelled payment
+ * @param {number} amount    - Payment amount (e.g. 23.45)
+ * @param {string} currency  - Currency code (default: 'EUR')
+ * @param {string} orderID   - Unique order ID
+ * @param {Array}  cartItems - Array of cart item objects
+ */
+export async function initEmbeddedCheckout({ urlOk, urlCancel, amount, currency, orderID, cartItems }) {
+    const MyPOSEmbedded = require('mypos-embedded-checkout');
+
+    var paymentParams = {
+        sid: '1180724',
+        ipcLanguage: 'en',
+        walletNumber: '40171207943',
+        amount: amount,
+        currency: currency || 'EUR',
+        orderID: orderID || Math.random().toString(36).substr(2, 9),
+        urlNotify: 'https://www.live-ls.com/_functions/transactionPaymentCreated',
+        urlOk: urlOk,
+        urlCancel: urlCancel,
+        keyIndex: 2,
+        cartItems: cartItems || []
+    };
+
+    var callbackParams = {
+        isSandbox: false,
+        onMessageReceived: function (messages) {
+            // Handle error and info messages
+            console.log('Messages:', messages);
+        },
+        onSuccess: function (data) {
+            console.log('Payment successful!', data);
+        },
+        onError: function () {
+            console.log('Payment failed');
+        }
+    };
+
+    // Create the form (without built-in Pay button)
+    MyPOSEmbedded.createPaymentForm(
+        'myPOSEmbeddedCheckout',
+        paymentParams,
+        callbackParams
+    ).then(function (payment) {
+        // Enable your custom Pay button
+        var button = document.getElementById('btn-pay');
+        button.disabled = false;
+
+        // Process payment when button is clicked
+        button.addEventListener("click", function () {
+            payment.processPayment();
+        });
+    });
 }
