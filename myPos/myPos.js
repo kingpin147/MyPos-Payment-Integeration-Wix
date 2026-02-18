@@ -57,15 +57,18 @@ export const createTransaction = async (options, context) => {
     const description = cleanDescription(buildDescription(order));
 
     // Extract customer info from the order
+    // Extract customer info from the order with improved fallbacks
     const billingAddress = order?.description?.billingAddress || {};
-    const email = billingAddress.email || 'customer@example.com';
+    const email = billingAddress.email || order?.customerEmail || 'customer@example.com';
     const firstName = billingAddress.firstName || billingAddress.first_name || 'Customer';
     const lastName = billingAddress.lastName || billingAddress.last_name || 'Name';
-    const phone = billingAddress.phone || '';
-    const country = billingAddress.country || '';
-    const city = billingAddress.city || '';
-    const zipCode = billingAddress.zipCode || billingAddress.postalCode || '';
-    const address = billingAddress.address || billingAddress.addressLine1 || '';
+
+    // myPOS sometimes requires these for 3DS or risk checks
+    const phone = billingAddress.phone || '0000000000';
+    const country = billingAddress.country || 'PT'; // Default to Portugal or user's preference
+    const city = billingAddress.city || 'N/A';
+    const zipCode = billingAddress.zipCode || billingAddress.postalCode || '0000';
+    const address = billingAddress.address || billingAddress.addressLine1 || 'N/A';
 
     const itemsRaw = Array.isArray(order?.description?.items) ? order.description.items : [];
     const items = itemsRaw.filter(item => item._id && isValidUUID(item._id));
@@ -75,7 +78,21 @@ export const createTransaction = async (options, context) => {
     }
 
     const itemIds = items.map(item => item._id);
+
+    await wixData.insert('logs', {
+        phase: 'ticket_query_start',
+        data: { itemIds },
+        ts: new Date().toISOString()
+    });
+
     const results = await wixData.query("Events/Tickets").hasSome("_id", itemIds).find();
+
+    await wixData.insert('logs', {
+        phase: 'ticket_query_result',
+        data: { count: results.items.length, items: results.items },
+        ts: new Date().toISOString()
+    });
+
     const ticketsMap = new Map(results.items.map(ticket => [ticket._id, ticket]));
 
     const tickets = [];
@@ -109,6 +126,14 @@ export const createTransaction = async (options, context) => {
     successQueryParams.set('eid', eventId);
     const successUrl = ensureHttps(`${baseSuccess}?${successQueryParams.toString()}`);
 
+    const cartitems = itemsRaw.map(item => ({
+        article: item.name || 'Ticket',
+        quantity: item.quantity || 1,
+        price: Number(centsToDecimal(item.price || 0)),
+        amount: Number(centsToDecimal((item.price || 0) * (item.quantity || 1))),
+        currency: 'EUR'
+    }));
+
     // Build payment data for myPOS — mirrors the Viva approach
     const paymentData = {
         amount: Number(amount),           // myPOS expects decimal amount (e.g. 23.45)
@@ -125,18 +150,50 @@ export const createTransaction = async (options, context) => {
         note: description,
         url_ok: successUrl,
         url_cancel: 'https://www.live-ls.com/',
+        cartitems: cartitems
     };
 
     console.log('myPOS createTransaction: paymentData', JSON.stringify(paymentData));
 
-    // Call backend — builds auto-submit POST form and returns it as a redirectUrl
-    const result = await getMyPosCheckoutUrl(paymentData);
+    try {
+        await wixData.insert('logs', {
+            phase: 'createTransaction_start',
+            data: { paymentData, options },
+            ts: new Date().toISOString()
+        });
 
-    console.log('myPOS createTransaction: result', JSON.stringify(result));
+        // Call backend — builds auto-submit POST form and returns it as a redirectUrl
+        const result = await getMyPosCheckoutUrl(paymentData);
 
-    return {
-        redirectUrl: result.redirectUrl,
-    };
+        await wixData.insert('logs', {
+            phase: 'createTransaction_result',
+            data: { result },
+            ts: new Date().toISOString()
+        });
+
+        console.log('myPOS createTransaction: result', JSON.stringify(result));
+
+        return {
+            redirectUrl: result.redirectUrl,
+        };
+    } catch (error) {
+        const errorData = {
+            phase: 'createTransaction_error',
+            data: {
+                paymentData,
+                errorMessage: error.message,
+                errorStack: error.stack
+            },
+            ts: new Date().toISOString()
+        };
+
+        if (error.message.includes('database') || error.message.includes('collection')) {
+            errorData.data.errorType = 'database_name_error';
+        }
+
+        await wixData.insert('logs', errorData);
+        throw error;
+    }
 };
 
 export const refundTransaction = async (options, context) => { };

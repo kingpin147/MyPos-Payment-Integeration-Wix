@@ -2,6 +2,7 @@
 import { getSecret } from 'wix-secrets-backend';
 import { fetch } from 'wix-fetch';
 import crypto from 'crypto';
+import wixData from 'wix-data';
 
 /**
  * Signs the concatenated POST data using RSA private key.
@@ -27,8 +28,13 @@ async function signPostData(postDataValues, privateKey) {
  */
 export async function createMyPosPaymentSession(params) {
     try {
-        if (params && params.params) params = params.params;
+        await wixData.insert('logs', {
+            phase: 'createMyPosPaymentSession_start',
+            data: { params },
+            ts: new Date().toISOString()
+        });
 
+        if (params && params.params) params = params.params;
         // 0. Normalize parameters
         const normalizedParams = {};
         Object.keys(params || {}).forEach(k => { normalizedParams[k.toLowerCase()] = params[k]; });
@@ -50,6 +56,17 @@ export async function createMyPosPaymentSession(params) {
         const urlOk = params.url_ok || '';
         const urlCancel = params.url_cancel || '';
         const urlNotify = 'https://www.live-ls.com/_functions/transactionPaymentCreated';
+
+        const customerEmail = params.customeremail || '';
+        const customerFirstNames = params.customerfirstnames || '';
+        const customerFamilyName = params.customerfamilyname || '';
+        const customerPhone = params.customerphone || '';
+        const customerCountry = params.customercountry || '';
+        const customerCity = params.customercity || '';
+        const customerZipCode = params.customerzipcode || '';
+        const customerAddress = params.customeraddress || '';
+        const note = params.note || '';
+        const source = params.source || 'Wix Integration';
 
         const cartItems = Array.isArray(params.cartitems) ? params.cartitems : [];
         const cartItemsCount = cartItems.length;
@@ -78,7 +95,22 @@ export async function createMyPosPaymentSession(params) {
                 item.currency || currency
             );
         });
-        sigValues.push(outputFormat);
+
+        sigValues.push(
+            cardTokenRequest,
+            paymentParamsRequired,
+            customerEmail,
+            customerFirstNames,
+            customerFamilyName,
+            customerPhone,
+            customerCountry,
+            customerCity,
+            customerZipCode,
+            customerAddress,
+            note,
+            source,
+            outputFormat
+        );
 
         // 3. Generate Sig & Call API
         const privateKey = await getSecret('myPos_privateKey');
@@ -106,6 +138,18 @@ export async function createMyPosPaymentSession(params) {
             body.append(`Currency_${idx}`, item.currency || currency);
         });
 
+        body.append('CardTokenRequest', cardTokenRequest);
+        body.append('PaymentParametersRequired', paymentParamsRequired);
+        body.append('CustomerEmail', customerEmail);
+        body.append('CustomerFirstNames', customerFirstNames);
+        body.append('CustomerFamilyName', customerFamilyName);
+        body.append('CustomerPhone', customerPhone);
+        body.append('CustomerCountry', customerCountry);
+        body.append('CustomerCity', customerCity);
+        body.append('CustomerZIPCode', customerZipCode);
+        body.append('CustomerAddress', customerAddress);
+        body.append('Note', note);
+        body.append('Source', source);
         body.append('OutputFormat', outputFormat);
         body.append('Signature', signature);
 
@@ -120,20 +164,46 @@ export async function createMyPosPaymentSession(params) {
         try {
             const result = JSON.parse(text);
             if (result.SessionToken) {
-                // Return the FINAL CHECKOUT URL
-                return {
+                const finalResult = {
                     success: true,
                     sessionToken: result.SessionToken,
                     redirectUrl: `${endpoint}?sid=${sid}&ipc_id=${result.SessionToken}`,
                     status: result.Status
                 };
+                
+                await wixData.insert('logs', {
+                    phase: 'createMyPosPaymentSession_success',
+                    data: { finalResult },
+                    ts: new Date().toISOString()
+                });
+
+                return finalResult;
             }
             throw new Error(result.StatusMsg || 'No SessionToken returned');
         } catch (e) {
-            throw new Error(`myPOS Error: ${text.substring(0, 500)}`);
+            const errorMsg = `myPOS Error: ${text.substring(0, 500)}`;
+            await wixData.insert('logs', {
+                phase: 'createMyPosPaymentSession_api_error',
+                data: { text, error: e.message },
+                ts: new Date().toISOString()
+            });
+            throw new Error(errorMsg);
         }
     } catch (error) {
         console.error('myPOS Session Error:', error.message);
+        const errorData = {
+            phase: 'createMyPosPaymentSession_fatal_error',
+            data: {
+                params,
+                errorMessage: error.message,
+                errorStack: error.stack
+            },
+            ts: new Date().toISOString()
+        };
+        if (error.message.includes('database') || error.message.includes('collection')) {
+            errorData.data.errorType = 'database_name_error';
+        }
+        await wixData.insert('logs', errorData);
         throw error;
     }
 }
@@ -274,6 +344,12 @@ export async function createEmbeddedCheckoutSession(params) {
  */
 export async function getMyPosCheckoutUrl(params) {
     try {
+        await wixData.insert('logs', {
+            phase: 'getMyPosCheckoutUrl_start',
+            data: { params },
+            ts: new Date().toISOString()
+        });
+
         if (params && params.params) params = params.params;
 
         // 0. Normalize parameters
@@ -435,12 +511,33 @@ export async function getMyPosCheckoutUrl(params) {
         // Encode as data: URI — Wix opens this page which immediately POSTs to myPOS
         const redirectUrl = 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
 
-        return {
-            success:     true,
+        const finalResult = {
+            success: true,
             redirectUrl: redirectUrl
         };
+
+        await wixData.insert('logs', {
+            phase: 'getMyPosCheckoutUrl_success',
+            data: { finalResult },
+            ts: new Date().toISOString()
+        });
+
+        return finalResult;
     } catch (error) {
         console.error('myPOS Checkout Error:', error.message);
+        const errorData = {
+            phase: 'getMyPosCheckoutUrl_error',
+            data: {
+                params,
+                errorMessage: error.message,
+                errorStack: error.stack
+            },
+            ts: new Date().toISOString()
+        };
+        if (error.message.includes('database') || error.message.includes('collection')) {
+            errorData.data.errorType = 'database_name_error';
+        }
+        await wixData.insert('logs', errorData);
         throw error;
     }
 }
