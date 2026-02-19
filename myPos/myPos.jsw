@@ -44,9 +44,11 @@ export async function getMyPosCheckoutUrl(params) {
             ts: new Date().toISOString()
         });
 
-        // 1. Static credentials
-        const sid = '1180724';
-        const walletNumber = '40171207943';
+        // 1. Static credentials (loaded from Wix Secrets Manager — not hardcoded)
+        const [sid, walletNumber] = await Promise.all([
+            getSecret('myPos_sid'),
+            getSecret('myPos_walletNumber')
+        ]);
         const urlOk = 'https://www.live-ls.com/_functions/myposOk';
         const urlCancel = 'https://www.live-ls.com/_functions/myposCancel';
         const urlNotify = 'https://www.live-ls.com/_functions/myposNotify';
