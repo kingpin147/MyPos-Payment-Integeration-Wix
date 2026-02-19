@@ -1,58 +1,71 @@
-# myPOS Checkout Integration for Wix
+# myPOS Checkout Integration for Wix (v3.0)
 
-This repository contains a robust integration for the myPOS Checkout API tailored for Wix websites. It handles signature generation, session management, and webhook verification using RSA-SHA256.
+This repository contains a robust, secure, and production-ready integration for the myPOS Checkout API tailored specifically for Wix websites. It handles the full payment lifecycle, including signature generation, webhook notification, and customer redirects.
 
-## Features
+## 🚀 Features
 
-- **Session-Based Checkout**: Securely create payment sessions and redirect users.
-- **Static Checkout URL**: Generate signed direct-payment URLs (IPCPurchase).
-- **Webhook Verification**: Securely handle `IPCPurchaseNotify` callbacks from myPOS.
-- **Production Ready**: Configured for the myPOS production environment.
+- **Standard Redirect Method (IPCPurchase)**: Generates secure, signed checkout URLs.
+- **Server-to-Server Notifications**: Robust handling of `IPCPurchaseNotify` to confirm payments.
+- **Dedicated Redirect Handlers**: Custom endpoints for "Success" (OK) and "Cancel" responses.
+- **RSA-SHA256 Security**: Full implementation of myPOS signature and verification logic.
+- **Extensive Logging**: Detailed telemetry logged to both the Wix Console and the `logs` collection.
+- **Auto-Provisioning**: Correctly handles Wix Order confirmation and Event ID resolution.
 
-## File Structure
+## 📁 File Structure
 
-- `myPos.jsw`: The main backend file containing all myPOS logic.
-- `http-functions.js`: Required for handling the `_functions/handleMyPosNotify` webhook.
+- **`myPos.jsw`**: Backend logic for signature generation, signature verification, and API communication.
+- **`http-functions.js`**: Webhook endpoints exposed at `/_functions/myposNotify`, `myposOk`, and `myposCancel`.
+- **`myPos.js`**: Frontend interface logic to initiate the transaction from the checkout page.
 
-## Prerequisites
+## 🛠️ Prerequisites
 
-1. **myPOS Account**: A registered myPOS merchant account.
-2. **Wix Secrets Manager**: Store your keys as:
-   - `myPos_privateKey`: Your Merchant Private Key.
-   - `myPos_publicKey`: The myPOS Public Key.
+1.  **myPOS Merchant Account**: Required `SID`, `WalletNumber`, and `KeyIndex`.
+2.  **Wix Secrets Manager**: You MUST store your keys in the Secrets Manager with these exact names:
+    -   `myPos_privateKey`: Your Store Private Key (PEM format).
+    -   `myPos_publicKey`: The myPOS Public Certificate (PEM format).
 
-## Usage
+## 📡 Webhook Endpoints
 
-### 1. Create a Payment Session
-This is the recommended method for Wix.
+Configure these in your myPOS Merchant Cabinet:
+
+| Type | Endpoint URL | Requirement |
+| :--- | :--- | :--- |
+| **Notification** | `https://yourdomain.com/_functions/myposNotify` | Must return `OK` |
+| **Success Redirect** | `https://yourdomain.com/_functions/myposOk` | Browser Redirect |
+| **Cancel Redirect** | `https://yourdomain.com/_functions/myposCancel` | Browser Redirect |
+
+## 💻 Usage
+
+### Initiate a Payment
+From your checkout page or event page:
 
 ```javascript
-import { createMyPosPaymentSession } from 'backend/myPos';
+import { createTransaction } from 'backend/myPos';
 
-const params = {
-    amount: 10.50,
-    orderid: "ORD-12345",
-    currency: "EUR"
-};
-
-const result = await createMyPosPaymentSession(params);
-if (result.success) {
+// 'options' provided by Wix Checkout or custom form
+const result = await createTransaction(options);
+if (result.redirectUrl) {
     wixLocation.to(result.redirectUrl);
 }
 ```
 
-### 2. Set Up Webhooks
-In your `http-functions.js`, implement the notify handler:
+### Webhook Handling (Internal)
+The `http-functions.js` file automatically handles incoming POST/GET requests. It:
+1.  **Parses** URL-encoded data.
+2.  **Verifies** the `Signature` using your Public Key.
+3.  **Matches** the `OrderID` to a Wix Event/Ticket.
+4.  **Confirms** the order status in the Wix database.
+5.  **Redirects** the user to the configured `"Thank You"` page.
 
-```javascript
-import { handleMyPosNotify } from 'backend/myPos';
+## 🛡️ Security
+-   All private keys are stored in the **Wix Secrets Manager** and never exposed to the frontend.
+-   Signatures are generated using **RSA-SHA256**.
+-   Webhooks are verified against the myPOS certificate to prevent spoofing.
 
-export async function post_handleMyPosNotify(request) {
-    const body = await request.bodyJson();
-    return handleMyPosNotify(body);
-}
-```
+## 📝 Logging & Monitoring
+This integration implements a tiered logging system:
+-   **Site Monitoring**: Real-time console logs with `[myPOS ...]` prefixes.
+-   **Database Logs**: Entries in the `logs` collection for every phase (start, signature, API response, webhook hit).
 
-## Security Note
-
-Always ensure `OrderID` is unique for every transaction to avoid redirect errors. All sensitive communication is backend-based to protect your private keys.
+---
+*Developed for robust payment processing on Wix platforms.*

@@ -56,19 +56,77 @@ export const createTransaction = async (options, context) => {
     const shortId = order._id;
     const description = cleanDescription(buildDescription(order));
 
-    // Extract customer info from the order
     // Extract customer info from the order with improved fallbacks
     const billingAddress = order?.description?.billingAddress || {};
-    const email = billingAddress.email || order?.customerEmail || 'customer@example.com';
-    const firstName = billingAddress.firstName || billingAddress.first_name || 'Customer';
-    const lastName = billingAddress.lastName || billingAddress.last_name || 'Name';
 
-    // myPOS sometimes requires these for 3DS or risk checks
-    const phone = billingAddress.phone || '0000000000';
-    const country = billingAddress.country || 'PT'; // Default to Portugal or user's preference
-    const city = billingAddress.city || 'N/A';
-    const zipCode = billingAddress.zipCode || billingAddress.postalCode || '0000';
-    const address = billingAddress.address || billingAddress.addressLine1 || 'N/A';
+    // Log the raw order to see exactly what Wix provides
+    await wixData.insert('logs', {
+        phase: 'createTransaction_raw_order',
+        data: {
+            orderKeys: Object.keys(order || {}),
+            descriptionKeys: Object.keys(order?.description || {}),
+            billingAddress,
+            buyerInfo: order?.description?.buyerInfo || order?.buyerInfo || null,
+            rawOrder: JSON.stringify(order).substring(0, 3000)
+        },
+        ts: new Date().toISOString()
+    });
+
+    const email = billingAddress.email
+        || order?.description?.buyerInfo?.email
+        || order?.buyerInfo?.email
+        || order?.customerEmail
+        || 'customer@example.com';
+
+    const firstName = billingAddress.firstName
+        || billingAddress.first_name
+        || order?.description?.buyerInfo?.firstName
+        || order?.buyerInfo?.firstName
+        || 'Customer';
+
+    const lastName = billingAddress.lastName
+        || billingAddress.last_name
+        || order?.description?.buyerInfo?.lastName
+        || order?.buyerInfo?.lastName
+        || 'Name';
+
+    const phone = billingAddress.phone
+        || billingAddress.phone_number
+        || billingAddress.phoneNumber
+        || order?.description?.buyerInfo?.phone
+        || order?.buyerInfo?.phone
+        || order?.customerPhone
+        || '0000000000';
+
+    const country = billingAddress.country
+        || billingAddress.country_code
+        || billingAddress.countryCode
+        || order?.description?.buyerInfo?.country
+        || order?.buyerInfo?.country
+        || order?.customerCountry
+        || 'PT';
+
+    const city = billingAddress.city
+        || billingAddress.town
+        || order?.description?.buyerInfo?.city
+        || order?.buyerInfo?.city
+        || 'N/A';
+
+    const zipCode = billingAddress.zipCode
+        || billingAddress.postalCode
+        || billingAddress.zip_code
+        || billingAddress.zip
+        || order?.description?.buyerInfo?.zipCode
+        || order?.buyerInfo?.zipCode
+        || '0000';
+
+    const address = billingAddress.address
+        || billingAddress.addressLine1
+        || billingAddress.address_line1
+        || billingAddress.street
+        || order?.description?.buyerInfo?.address
+        || order?.buyerInfo?.address
+        || 'N/A';
 
     const itemsRaw = Array.isArray(order?.description?.items) ? order.description.items : [];
     const items = itemsRaw.filter(item => item._id && isValidUUID(item._id));
@@ -134,11 +192,11 @@ export const createTransaction = async (options, context) => {
         currency: 'EUR'
     }));
 
-    // Build payment data for myPOS — mirrors the Viva approach
+    // Build payment data for myPOS
     const paymentData = {
-        amount: Number(amount),           // myPOS expects decimal amount (e.g. 23.45)
+        amount: Number(amount),
         currency: 'EUR',
-        orderid: `${shortId}:${eventId}`, // Combine orderId and eventId
+        orderid: shortId,
         customeremail: email,
         customerfirstnames: firstName,
         customerfamilyname: lastName,
@@ -148,8 +206,8 @@ export const createTransaction = async (options, context) => {
         customerzipcode: zipCode,
         customeraddress: address,
         note: description,
-        url_ok: successUrl,
-        url_cancel: 'https://www.live-ls.com/',
+        url_ok: 'https://www.live-ls.com/_functions/myposOk',
+        url_cancel: 'https://www.live-ls.com/_functions/myposCancel',
         cartitems: cartitems
     };
 
@@ -158,11 +216,14 @@ export const createTransaction = async (options, context) => {
     try {
         await wixData.insert('logs', {
             phase: 'createTransaction_start',
-            data: { paymentData, options },
+            data: {
+                paymentData,
+                fullOrderInfo: order // Log full order for deep debugging
+            },
             ts: new Date().toISOString()
         });
 
-        // Call backend — builds auto-submit POST form and returns it as a redirectUrl
+        // Call backend — now expected to return a real checkout URL with requestID
         const result = await getMyPosCheckoutUrl(paymentData);
 
         await wixData.insert('logs', {

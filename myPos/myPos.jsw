@@ -22,320 +22,7 @@ async function signPostData(postDataValues, privateKey) {
     }
 }
 
-/**
- * createMyPosPaymentSession
- * Goal: Get a sessionToken (ipc_id) and build a redirect URL.
- */
-export async function createMyPosPaymentSession(params) {
-    try {
-        await wixData.insert('logs', {
-            phase: 'createMyPosPaymentSession_start',
-            data: { params },
-            ts: new Date().toISOString()
-        });
 
-        if (params && params.params) params = params.params;
-        // 0. Normalize parameters
-        const normalizedParams = {};
-        Object.keys(params || {}).forEach(k => { normalizedParams[k.toLowerCase()] = params[k]; });
-        params = normalizedParams;
-
-        // 1. Setup Data - STATIC PARAMS WITH DYNAMIC URL OVERRIDE
-        const sid = '1180724';
-        const walletNumber = '40171207943';
-        const keyIndex = '2';
-        const requestToken = (params.requesttoken || 0).toString();
-        const cardTokenRequest = '0';
-        const paymentParamsRequired = '3';
-        const outputFormat = 'JSON';
-
-        const orderId = params.orderid || Date.now().toString();
-        const amountValue = Number(params.amount || 0).toFixed(2);
-        const currency = params.currency || 'EUR';
-        
-        const urlOk = params.url_ok || '';
-        const urlCancel = params.url_cancel || '';
-        const urlNotify = 'https://www.live-ls.com/_functions/transactionPaymentCreated';
-
-        const customerEmail = params.customeremail || '';
-        const customerFirstNames = params.customerfirstnames || '';
-        const customerFamilyName = params.customerfamilyname || '';
-        const customerPhone = params.customerphone || '';
-        const customerCountry = params.customercountry || '';
-        const customerCity = params.customercity || '';
-        const customerZipCode = params.customerzipcode || '';
-        const customerAddress = params.customeraddress || '';
-        const note = params.note || '';
-        const source = params.source || 'Wix Integration';
-
-        const cartItems = Array.isArray(params.cartitems) ? params.cartitems : [];
-        const cartItemsCount = cartItems.length;
-
-        // 2. Build Signature Array (Verified PHP Order for IPCPaymentSessionCreate)
-        const sigValues = [
-            'IPCPaymentSessionCreate',
-            '1.4',
-            'EN',
-            orderId,
-            amountValue,
-            currency,
-            sid,
-            walletNumber,
-            keyIndex.toString(),
-            requestToken.toString(),
-            cartItemsCount.toString()
-        ];
-
-        cartItems.forEach(item => {
-            sigValues.push(
-                item.article || '',
-                (item.quantity || 0).toString(),
-                Number(item.price || 0).toFixed(2),
-                Number(item.amount || (item.quantity * item.price)).toFixed(2),
-                item.currency || currency
-            );
-        });
-
-        sigValues.push(
-            cardTokenRequest,
-            paymentParamsRequired,
-            customerEmail,
-            customerFirstNames,
-            customerFamilyName,
-            customerPhone,
-            customerCountry,
-            customerCity,
-            customerZipCode,
-            customerAddress,
-            note,
-            source,
-            outputFormat
-        );
-
-        // 3. Generate Sig & Call API
-        const privateKey = await getSecret('myPos_privateKey');
-        const signature = await signPostData(sigValues, privateKey);
-
-        const body = new URLSearchParams();
-        body.append('IPCmethod', 'IPCPaymentSessionCreate');
-        body.append('IPCVersion', '1.4');
-        body.append('IPCLanguage', 'EN');
-        body.append('OrderID', orderId);
-        body.append('Amount', amountValue);
-        body.append('Currency', currency);
-        body.append('SID', sid);
-        body.append('WalletNumber', walletNumber);
-        body.append('KeyIndex', keyIndex.toString());
-        body.append('RequestToken', requestToken.toString());
-        body.append('CartItems', cartItemsCount.toString());
-
-        cartItems.forEach((item, i) => {
-            const idx = i + 1;
-            body.append(`Article_${idx}`, item.article || '');
-            body.append(`Quantity_${idx}`, (item.quantity || 0).toString());
-            body.append(`Price_${idx}`, Number(item.price || 0).toFixed(2));
-            body.append(`Amount_${idx}`, Number(item.amount || (item.quantity * item.price)).toFixed(2));
-            body.append(`Currency_${idx}`, item.currency || currency);
-        });
-
-        body.append('CardTokenRequest', cardTokenRequest);
-        body.append('PaymentParametersRequired', paymentParamsRequired);
-        body.append('CustomerEmail', customerEmail);
-        body.append('CustomerFirstNames', customerFirstNames);
-        body.append('CustomerFamilyName', customerFamilyName);
-        body.append('CustomerPhone', customerPhone);
-        body.append('CustomerCountry', customerCountry);
-        body.append('CustomerCity', customerCity);
-        body.append('CustomerZIPCode', customerZipCode);
-        body.append('CustomerAddress', customerAddress);
-        body.append('Note', note);
-        body.append('Source', source);
-        body.append('OutputFormat', outputFormat);
-        body.append('Signature', signature);
-
-        const endpoint = 'https://www.mypos.com/vmp/checkout';
-        const response = await fetch(endpoint, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: body.toString()
-        });
-
-        const text = await response.text();
-        try {
-            const result = JSON.parse(text);
-            if (result.SessionToken) {
-                const finalResult = {
-                    success: true,
-                    sessionToken: result.SessionToken,
-                    redirectUrl: `${endpoint}?sid=${sid}&ipc_id=${result.SessionToken}`,
-                    status: result.Status
-                };
-                
-                await wixData.insert('logs', {
-                    phase: 'createMyPosPaymentSession_success',
-                    data: { finalResult },
-                    ts: new Date().toISOString()
-                });
-
-                return finalResult;
-            }
-            throw new Error(result.StatusMsg || 'No SessionToken returned');
-        } catch (e) {
-            const errorMsg = `myPOS Error: ${text.substring(0, 500)}`;
-            await wixData.insert('logs', {
-                phase: 'createMyPosPaymentSession_api_error',
-                data: { text, error: e.message },
-                ts: new Date().toISOString()
-            });
-            throw new Error(errorMsg);
-        }
-    } catch (error) {
-        console.error('myPOS Session Error:', error.message);
-        const errorData = {
-            phase: 'createMyPosPaymentSession_fatal_error',
-            data: {
-                params,
-                errorMessage: error.message,
-                errorStack: error.stack
-            },
-            ts: new Date().toISOString()
-        };
-        if (error.message.includes('database') || error.message.includes('collection')) {
-            errorData.data.errorType = 'database_name_error';
-        }
-        await wixData.insert('logs', errorData);
-        throw error;
-    }
-}
-
-/**
- * createEmbeddedCheckoutSession
- * Creates a myPOS payment session and returns the sessionToken along with
- * a paymentParams object shaped exactly as the mypos-embedded-checkout
- * library expects. The frontend page calls MyPOSEmbedded.createPaymentForm()
- * using these params.
- */
-export async function createEmbeddedCheckoutSession(params) {
-    try {
-        if (params && params.params) params = params.params;
-
-        // 0. Normalize parameter keys to lowercase
-        const normalizedParams = {};
-        Object.keys(params || {}).forEach(k => { normalizedParams[k.toLowerCase()] = params[k]; });
-        params = normalizedParams;
-
-        // 1. Static credentials
-        const sid = '1180724';
-        const walletNumber = '40171207943';
-        const keyIndex = '2';
-        const outputFormat = 'JSON';
-        const requestToken = (params.requesttoken || 0).toString();
-
-        // 2. Dynamic params
-        const orderId = params.orderid || Date.now().toString();
-        const amountValue = Number(params.amount || 0).toFixed(2);
-        const currency = params.currency || 'EUR';
-        const urlOk = params.url_ok || '';
-        const urlCancel = params.url_cancel || 'https://www.live-ls.com/';
-        const urlNotify = 'https://www.live-ls.com/_functions/transactionPaymentCreated';
-        const cartItems = Array.isArray(params.cartitems) ? params.cartitems : [];
-        const cartItemsCount = cartItems.length;
-
-        // 3. Build signature array (same order as IPCPaymentSessionCreate)
-        const sigValues = [
-            'IPCPaymentSessionCreate',
-            '1.4',
-            'EN',
-            orderId,
-            amountValue,
-            currency,
-            sid,
-            walletNumber,
-            keyIndex.toString(),
-            requestToken.toString(),
-            cartItemsCount.toString()
-        ];
-
-        cartItems.forEach(item => {
-            sigValues.push(
-                item.article || '',
-                (item.quantity || 0).toString(),
-                Number(item.price || 0).toFixed(2),
-                Number(item.amount || (item.quantity * item.price)).toFixed(2),
-                item.currency || currency
-            );
-        });
-        sigValues.push(outputFormat);
-
-        // 4. Sign & call the myPOS session API
-        const privateKey = await getSecret('myPos_privateKey');
-        const signature = await signPostData(sigValues, privateKey);
-
-        const body = new URLSearchParams();
-        body.append('IPCmethod', 'IPCPaymentSessionCreate');
-        body.append('IPCVersion', '1.4');
-        body.append('IPCLanguage', 'EN');
-        body.append('OrderID', orderId);
-        body.append('Amount', amountValue);
-        body.append('Currency', currency);
-        body.append('SID', sid);
-        body.append('WalletNumber', walletNumber);
-        body.append('KeyIndex', keyIndex.toString());
-        body.append('RequestToken', requestToken.toString());
-        body.append('CartItems', cartItemsCount.toString());
-
-        cartItems.forEach((item, i) => {
-            const idx = i + 1;
-            body.append(`Article_${idx}`, item.article || '');
-            body.append(`Quantity_${idx}`, (item.quantity || 0).toString());
-            body.append(`Price_${idx}`, Number(item.price || 0).toFixed(2));
-            body.append(`Amount_${idx}`, Number(item.amount || (item.quantity * item.price)).toFixed(2));
-            body.append(`Currency_${idx}`, item.currency || currency);
-        });
-
-        body.append('OutputFormat', outputFormat);
-        body.append('Signature', signature);
-
-        const endpoint = 'https://www.mypos.com/vmp/checkout';
-        const response = await fetch(endpoint, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: body.toString()
-        });
-
-        const text = await response.text();
-        const result = JSON.parse(text);
-
-        if (!result.SessionToken) {
-            throw new Error(result.StatusMsg || 'No SessionToken returned');
-        }
-
-        console.log('myPOS createEmbeddedCheckoutSession: SessionToken received', result.SessionToken);
-
-        // 5. Return sessionToken + paymentParams shaped for mypos-embedded-checkout
-        return {
-            success: true,
-            sessionToken: result.SessionToken,
-            status: result.Status,
-            paymentParams: {
-                sid: sid,
-                ipcLanguage: 'en',
-                walletNumber: walletNumber,
-                amount: Number(amountValue),
-                currency: currency,
-                orderID: orderId,
-                urlNotify: urlNotify,
-                urlOk: urlOk,
-                urlCancel: urlCancel,
-                keyIndex: Number(keyIndex),
-                cartItems: cartItems
-            }
-        };
-    } catch (error) {
-        console.error('myPOS Embedded Checkout Session Error:', error.message);
-        throw error;
-    }
-}
 
 /**
  * getMyPosCheckoutUrl
@@ -344,12 +31,6 @@ export async function createEmbeddedCheckoutSession(params) {
  */
 export async function getMyPosCheckoutUrl(params) {
     try {
-        await wixData.insert('logs', {
-            phase: 'getMyPosCheckoutUrl_start',
-            data: { params },
-            ts: new Date().toISOString()
-        });
-
         if (params && params.params) params = params.params;
 
         // 0. Normalize parameters
@@ -357,32 +38,36 @@ export async function getMyPosCheckoutUrl(params) {
         Object.keys(params || {}).forEach(k => { normalizedParams[k.toLowerCase()] = params[k]; });
         params = normalizedParams;
 
-        // 1. Setup Data - STATIC PARAMS OVERRIDE
+        await wixData.insert('logs', {
+            phase: 'getMyPosCheckoutUrl_start',
+            data: { normalizedParams: params },
+            ts: new Date().toISOString()
+        });
+
+        // 1. Static credentials
         const sid = '1180724';
         const walletNumber = '40171207943';
-        const urlOk = params.url_ok;
-        const urlCancel =  'https://www.live-ls.com/';
-        const urlNotify = 'https://www.live-ls.com/_functions/transactionPaymentCreated';
+        const urlOk = 'https://www.live-ls.com/_functions/myposOk';
+        const urlCancel = 'https://www.live-ls.com/_functions/myposCancel';
+        const urlNotify = 'https://www.live-ls.com/_functions/myposNotify';
         const cardTokenRequest = '0';
         const keyIndex = '2';
-        const paymentParamsRequired = '3';
+        const paymentParamsRequired = '0'; // myPOS collects customer details on its own page
 
-        // Dynamic parameters from call
+        // 2. Dynamic parameters
         const amountValue = Number(params.amount || 0).toFixed(2);
         const currency = params.currency || 'EUR';
         const orderId = params.orderid || Date.now().toString();
-        
         const paymentMethod = (params.paymentmethod || 1).toString();
 
-        const customerEmail = params.customeremail || '';
-        const customerFirstNames = params.customerfirstnames || '';
-        const customerFamilyName = params.customerfamilyname || '';
-        const customerPhone = params.customerphone || '';
-        const customerCountry = params.customercountry || '';
-        const customerCity = params.customercity || '';
-        const customerZipCode = params.customerzipcode || '';
-        const customerAddress = params.customeraddress || '';
-
+        const customerEmail = params.customeremail || 'customer@example.com';
+        const customerFirstNames = params.customerfirstnames || 'Customer';
+        const customerFamilyName = params.customerfamilyname || 'Name';
+        const customerPhone = params.customerphone || '0000000000';
+        const customerCountry = params.customercountry || 'PT';
+        const customerCity = params.customercity || 'N/A';
+        const customerZipCode = params.customerzipcode || '0000';
+        const customerAddress = params.customeraddress || 'N/A';
         const note = params.note || '';
         const source = params.source || 'Wix Integration';
         const deliveryValue = Number(params.delivery || 0).toFixed(2);
@@ -390,38 +75,21 @@ export async function getMyPosCheckoutUrl(params) {
         const cartItems = Array.isArray(params.cartitems) ? params.cartitems : [];
         const cartItemsCount = cartItems.length;
 
-        // 2. Build Signature Array for IPCPurchase (STRICT DOCS TABLE ORDER)
+        // 3. Build signature array (strict IPCPurchase order)
         const sigValues = [
-            'IPCPurchase',
-            '1.4',
-            'EN',
-            sid,
-            walletNumber,
-            amountValue,
-            currency,
-            orderId,
-            urlOk,
-            urlCancel,
-            urlNotify,
-            cardTokenRequest,
-            keyIndex,
-            paymentParamsRequired,
-            paymentMethod,
-            customerEmail,
-            customerFirstNames,
-            customerFamilyName,
-            customerPhone,
-            customerCountry,
-            customerCity,
-            customerZipCode,
-            customerAddress,
-            note,
-            source,
+            'IPCPurchase', '1.4', 'EN',
+            sid, walletNumber,
+            amountValue, currency, orderId,
+            urlOk, urlCancel, urlNotify,
+            cardTokenRequest, keyIndex, paymentParamsRequired, paymentMethod,
+            customerEmail, customerFirstNames, customerFamilyName,
+            customerPhone, customerCountry, customerCity,
+            customerZipCode, customerAddress,
+            note, source,
             cartItemsCount.toString()
         ];
 
-        // Add each cart item's fields to the signature data
-        cartItems.forEach((item, i) => {
+        cartItems.forEach((item) => {
             sigValues.push(
                 item.article || '',
                 (item.quantity || 0).toString(),
@@ -430,46 +98,48 @@ export async function getMyPosCheckoutUrl(params) {
                 item.currency || currency
             );
         });
-
         sigValues.push(deliveryValue);
 
-        // 3. Sign the data
+        await wixData.insert('logs', {
+            phase: 'getMyPosCheckoutUrl_sigValues',
+            data: { sigValues },
+            ts: new Date().toISOString()
+        });
+
+        // 4. Sign
         const privateKey = await getSecret('myPos_privateKey');
         const signature = await signPostData(sigValues, privateKey);
 
-        // 4. Build postData object in the exact same order as the PHP example.
-        //    IPCPurchase requires a POST form submission — NOT a GET redirect URL.
-        //    The frontend receives this object and renders an auto-submitting hidden form.
+        // 5. Build POST body
         const postData = {
-            IPCmethod:                'IPCPurchase',
-            IPCVersion:               '1.4',
-            IPCLanguage:              'EN',
-            SID:                      sid,
-            WalletNumber:             walletNumber,
-            Amount:                   amountValue,
-            Currency:                 currency,
-            OrderID:                  orderId,
-            URL_OK:                   urlOk,
-            URL_Cancel:               urlCancel,
-            URL_Notify:               urlNotify,
-            CardTokenRequest:         cardTokenRequest,
-            KeyIndex:                 keyIndex,
+            IPCmethod: 'IPCPurchase',
+            IPCVersion: '1.4',
+            IPCLanguage: 'EN',
+            SID: sid,
+            WalletNumber: walletNumber,
+            Amount: amountValue,
+            Currency: currency,
+            OrderID: orderId,
+            URL_OK: urlOk,
+            URL_Cancel: urlCancel,
+            URL_Notify: urlNotify,
+            CardTokenRequest: cardTokenRequest,
+            KeyIndex: keyIndex,
             PaymentParametersRequired: paymentParamsRequired,
-            PaymentMethod:            paymentMethod,
-            CustomerEmail:            customerEmail,
-            CustomerFirstNames:       customerFirstNames,
-            CustomerFamilyName:       customerFamilyName,
-            CustomerPhone:            customerPhone,
-            CustomerCountry:          customerCountry,
-            CustomerCity:             customerCity,
-            CustomerZIPCode:          customerZipCode,
-            CustomerAddress:          customerAddress,
-            Note:                     note,
-            Source:                   source,
-            CartItems:                cartItemsCount.toString(),
+            PaymentMethod: paymentMethod,
+            CustomerEmail: customerEmail,
+            CustomerFirstNames: customerFirstNames,
+            CustomerFamilyName: customerFamilyName,
+            CustomerPhone: customerPhone,
+            CustomerCountry: customerCountry,
+            CustomerCity: customerCity,
+            CustomerZIPCode: customerZipCode,
+            CustomerAddress: customerAddress,
+            Note: note,
+            Source: source,
+            CartItems: cartItemsCount.toString()
         };
 
-        // Append cart item fields
         cartItems.forEach((item, i) => {
             const idx = i + 1;
             postData[`Article_${idx}`]  = item.article || '';
@@ -482,62 +152,126 @@ export async function getMyPosCheckoutUrl(params) {
         postData['Delivery']  = deliveryValue;
         postData['Signature'] = signature;
 
+        const body = new URLSearchParams();
+        Object.entries(postData).forEach(([k, v]) => body.append(k, String(v)));
+
         const endpoint = 'https://www.mypos.com/vmp/checkout';
 
-        // Build auto-submitting hidden form — identical to the PHP example.
-        // All fields become <input type="hidden"> and the form POSTs on page load.
-        const fields = Object.entries(postData)
-            .map(([k, v]) =>
-                `<input type="hidden" name="${k}" value="${String(v).replace(/"/g, '&quot;')}">`
-            )
-            .join('\n    ');
-
-        const html = `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>Redirecting to myPOS Checkout...</title>
-</head>
-<body>
-  <p>Redirecting to payment page...</p>
-  <form id="myposForm" method="post" action="${endpoint}">
-    ${fields}
-    <noscript><button type="submit">Continue</button></noscript>
-  </form>
-  <script>document.getElementById('myposForm').submit();<\/script>
-</body>
-</html>`;
-
-        // Encode as data: URI — Wix opens this page which immediately POSTs to myPOS
-        const redirectUrl = 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
-
-        const finalResult = {
-            success: true,
-            redirectUrl: redirectUrl
-        };
-
         await wixData.insert('logs', {
-            phase: 'getMyPosCheckoutUrl_success',
-            data: { finalResult },
+            phase: 'getMyPosCheckoutUrl_api_call',
+            data: { version: 'v3.0-body-parse', endpoint, postData },
             ts: new Date().toISOString()
         });
 
-        return finalResult;
-    } catch (error) {
-        console.error('myPOS Checkout Error:', error.message);
-        const errorData = {
-            phase: 'getMyPosCheckoutUrl_error',
+        // 6. POST to myPOS — Wix fetch follows redirects automatically.
+        //    myPOS responds with an HTML page that contains the final checkout URL.
+        //    We parse the requestID URL directly from the response body.
+        const apiResponse = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: body.toString()
+        });
+
+        const status = apiResponse.status;
+        const responseText = await apiResponse.text();
+        const finalUrl = apiResponse.url; // URL after any automatic redirects
+
+        await wixData.insert('logs', {
+            phase: 'getMyPosCheckoutUrl_api_response',
             data: {
-                params,
-                errorMessage: error.message,
-                errorStack: error.stack
+                status,
+                finalUrl,
+                bodySnippet: responseText.substring(0, 1500)
             },
             ts: new Date().toISOString()
-        };
-        if (error.message.includes('database') || error.message.includes('collection')) {
-            errorData.data.errorType = 'database_name_error';
+        });
+
+        const bodyLen = responseText.length;
+
+        // Log the body in chunks so we can see the full response
+        await wixData.insert('logs', {
+            phase: 'getMyPosCheckoutUrl_body_chunk_1',
+            data: { bodyLen, chunk: responseText.substring(0, 3000) },
+            ts: new Date().toISOString()
+        });
+        if (bodyLen > 3000) {
+            await wixData.insert('logs', {
+                phase: 'getMyPosCheckoutUrl_body_chunk_2',
+                data: { chunk: responseText.substring(3000, 6000) },
+                ts: new Date().toISOString()
+            });
         }
-        await wixData.insert('logs', errorData);
+        if (bodyLen > 6000) {
+            await wixData.insert('logs', {
+                phase: 'getMyPosCheckoutUrl_body_chunk_3',
+                data: { chunk: responseText.substring(6000, 9000) },
+                ts: new Date().toISOString()
+            });
+        }
+
+        // Try multiple patterns to find the requestID:
+        // 1. Full /pmnt URL
+        let requestIdMatch = responseText.match(
+            /https:\/\/www\.mypos\.com\/vmp\/checkout\/pmnt\?requestID=[a-zA-Z0-9_~=-]+/
+        );
+
+        // 2. Any mypos checkout URL with requestID
+        if (!requestIdMatch) {
+            requestIdMatch = responseText.match(
+                /https:\/\/www\.mypos\.com\/vmp\/checkout\/[a-zA-Z]+\?requestID=[a-zA-Z0-9_~=-]+/
+            );
+        }
+
+        // 3. requestID as a bare value in JS/JSON (e.g. requestID":"abc" or requestID=abc)
+        if (!requestIdMatch) {
+            const bareMatch = responseText.match(/requestID[=:"']+([a-zA-Z0-9_~=-]{10,})/);
+            if (bareMatch) {
+                const rid = bareMatch[1];
+                await wixData.insert('logs', {
+                    phase: 'getMyPosCheckoutUrl_bare_requestId',
+                    data: { rid },
+                    ts: new Date().toISOString()
+                });
+                return { success: true, redirectUrl: `https://www.mypos.com/vmp/checkout/pmnt?requestID=${rid}` };
+            }
+        }
+
+        if (requestIdMatch) {
+            const checkoutUrl = requestIdMatch[0];
+            await wixData.insert('logs', {
+                phase: 'getMyPosCheckoutUrl_success',
+                data: { checkoutUrl },
+                ts: new Date().toISOString()
+            });
+            return { success: true, redirectUrl: checkoutUrl };
+        }
+
+        // If Wix followed a redirect and the final URL already has requestID
+        if (finalUrl && finalUrl.includes('requestID=')) {
+            await wixData.insert('logs', {
+                phase: 'getMyPosCheckoutUrl_success_via_redirect',
+                data: { finalUrl },
+                ts: new Date().toISOString()
+            });
+            return { success: true, redirectUrl: finalUrl };
+        }
+
+        // Still not found — log body length and last chunk for debugging
+        await wixData.insert('logs', {
+            phase: 'getMyPosCheckoutUrl_no_requestId_found',
+            data: { status, finalUrl, bodyLen, lastChunk: responseText.substring(Math.max(0, bodyLen - 2000)) },
+            ts: new Date().toISOString()
+        });
+
+        throw new Error(`myPOS did not return a requestID URL. Status: ${status}. BodyLen: ${bodyLen}`);
+
+    } catch (error) {
+        console.error('myPOS Checkout Error:', error.message);
+        await wixData.insert('logs', {
+            phase: 'getMyPosCheckoutUrl_error',
+            data: { errorMessage: error.message, errorStack: error.stack },
+            ts: new Date().toISOString()
+        });
         throw error;
     }
 }
@@ -569,79 +303,5 @@ export async function verifySignature(postData, signature) {
     }
 }
 
-/**
- * handleMyPosNotify
- * Processes the incoming IPCPurchaseNotify webhook.
- */
-export async function handleMyPosNotify(postData) {
-    try {
-        if (!postData.Signature) throw new Error('No Signature');
-        const isValid = await verifySignature(postData, postData.Signature);
-        if (!isValid) return { success: false, error: 'Invalid Signature' };
-        return { success: true, orderId: postData.OrderID, status: postData.IPCmethod };
-    } catch (error) {
-        console.error('myPOS Notify Error:', error.message);
-        throw error;
-    }
-}
 
-/**
- * initEmbeddedCheckout
- * Standalone embedded checkout — mirrors the client's example exactly.
- * Defines paymentParams and callbackParams, then calls
- * MyPOSEmbedded.createPaymentForm() with a custom Pay button.
- *
- * @param {string} urlOk     - Redirect URL on successful payment
- * @param {string} urlCancel - Redirect URL on cancelled payment
- * @param {number} amount    - Payment amount (e.g. 23.45)
- * @param {string} currency  - Currency code (default: 'EUR')
- * @param {string} orderID   - Unique order ID
- * @param {Array}  cartItems - Array of cart item objects
- */
-export async function initEmbeddedCheckout({ urlOk, urlCancel, amount, currency, orderID, cartItems }) {
-    const MyPOSEmbedded = require('mypos-embedded-checkout');
 
-    var paymentParams = {
-        sid: '1180724',
-        ipcLanguage: 'en',
-        walletNumber: '40171207943',
-        amount: amount,
-        currency: currency || 'EUR',
-        orderID: orderID || Math.random().toString(36).substr(2, 9),
-        urlNotify: 'https://www.live-ls.com/_functions/transactionPaymentCreated',
-        urlOk: urlOk,
-        urlCancel: urlCancel,
-        keyIndex: 2,
-        cartItems: cartItems || []
-    };
-
-    var callbackParams = {
-        isSandbox: false,
-        onMessageReceived: function (messages) {
-            // Handle error and info messages
-            console.log('Messages:', messages);
-        },
-        onSuccess: function (data) {
-            console.log('Payment successful!', data);
-        },
-        onError: function () {
-            console.log('Payment failed');
-        }
-    };
-
-    // Create the form (without built-in Pay button)
-    MyPOSEmbedded.createPaymentForm(
-        'myPOSEmbeddedCheckout',
-        paymentParams,
-        callbackParams
-    ).then(function (payment) {
-        // Enable your custom Pay button
-        var button = document.getElementById('btn-pay');
-        button.disabled = false;
-
-        // Process payment when button is clicked
-        button.addEventListener("click", function () {
-            payment.processPayment();
-        });
-    });
-}
