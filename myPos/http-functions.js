@@ -399,12 +399,16 @@ export async function post_myposNotify(request) {
         }
 
         console.log(`[myPOS Notify ${ts}] Validating signature...`);
-        const isValid = await verifySignature(postData, signature);
+        const isValid = await verifySignature(postData, signature, bodyText);
         console.log(`[myPOS Notify ${ts}] Signature Valid:`, isValid);
 
         if (!isValid) {
             console.error(`[myPOS Notify ${ts}] Invalid signature detected`);
-            return response({ status: 200, body: 'FAIL' });
+            return response({
+                status: 200,
+                body: 'FAIL',
+                headers: { 'Content-Type': 'text/plain' }
+            });
         }
 
         // 2. Extract Key Fields
@@ -415,7 +419,33 @@ export async function post_myposNotify(request) {
 
         console.log(`[myPOS Notify ${ts}] OrderID: ${orderId}, Amount: ${amount}, Currency: ${currency}, Method: ${status}`);
 
-        // 3. Merchant Logic: Verify Order and Update Status
+        // 3. Handle Notification Type
+        if (status === 'IPCPurchaseRollback') {
+            console.warn(`[myPOS Notify ${ts}] TRANSACTION ROLLBACK RECEIVED for order: ${orderId}`);
+            await wixData.insert('logs', {
+                phase: 'mypos_notify_rollback',
+                data: { orderId, postData },
+                ts
+            });
+
+            // Return OK to myPOS to acknowledge the rollback notification
+            return response({
+                status: 200,
+                body: 'OK',
+                headers: { 'Content-Type': 'text/plain' }
+            });
+        }
+
+        if (status !== 'IPCPurchaseNotify') {
+            console.warn(`[myPOS Notify ${ts}] Unhandled IPCmethod: ${status}`);
+            return response({
+                status: 200,
+                body: 'OK',
+                headers: { 'Content-Type': 'text/plain' }
+            });
+        }
+
+        // 4. Merchant Logic: Verify Order and Update Status
         let eventId;
         try {
             console.log(`[myPOS Notify ${ts}] Looking up order in Events/Orders: ${orderId}`);
@@ -454,10 +484,15 @@ export async function post_myposNotify(request) {
 
         if (!eventId) {
             console.error(`[myPOS Notify ${ts}] Final resolve failed: Could not determine eventId`);
-            return response({ status: 200, body: 'FAIL' });
+            // We still return OK to myPOS to acknowledge reception, even if we failed to process it locally
+            return response({
+                status: 200,
+                body: 'OK',
+                headers: { 'Content-Type': 'text/plain' }
+            });
         }
 
-        // 4. Confirm the Order in Wix
+        // 5. Confirm the Order in Wix
         console.log(`[myPOS Notify ${ts}] Confirming order in Wix for event: ${eventId}, order: ${orderId}`);
         const confirmOptions = { orderNumber: [orderId] };
         const confirmResult = await confirmOrder(eventId, confirmOptions);
@@ -470,10 +505,11 @@ export async function post_myposNotify(request) {
             ts
         });
 
-        // 5. Respond with OK
+        // 6. Respond with OK (Strictly plain text as per myPOS requirements)
         return response({
             status: 200,
-            body: 'OK'
+            body: 'OK',
+            headers: { 'Content-Type': 'text/plain' }
         });
 
     } catch (error) {
@@ -485,7 +521,8 @@ export async function post_myposNotify(request) {
         });
         return response({
             status: 200,
-            body: 'FAIL'
+            body: 'FAIL',
+            headers: { 'Content-Type': 'text/plain' }
         });
     }
 }
@@ -519,10 +556,11 @@ export async function post_myposOk(request) {
         const signature = postData.Signature;
         if (signature) {
             console.log(`[myPOS OK Redirect ${ts}] Validating signature...`);
-            const isValid = await verifySignature(postData, signature);
+            const isValid = await verifySignature(postData, signature, bodyText);
             console.log(`[myPOS OK Redirect ${ts}] Signature Valid: ${isValid}`);
             if (!isValid) {
                 console.error(`[myPOS OK Redirect ${ts}] Invalid signature on OK redirect`);
+                // Continue redirect even if signature fails, but log error
             }
         } else {
             console.warn(`[myPOS OK Redirect ${ts}] No signature found on OK redirect`);
@@ -599,7 +637,7 @@ export async function post_myposCancel(request) {
         // 1. Validate Signature (Optional for Cancel, but good practice)
         const signature = postData.Signature;
         if (signature) {
-            const isValid = await verifySignature(postData, signature);
+            const isValid = await verifySignature(postData, signature, bodyText);
             console.log(`[myPOS Cancel ${ts}] Signature Valid: ${isValid}`);
         }
 

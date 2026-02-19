@@ -281,17 +281,33 @@ export async function getMyPosCheckoutUrl(params) {
 /**
  * verifySignature
  * Verifies myPOS notification signatures using the myPOS Public Certificate.
+ * @param {object} postData - Parsed JSON data
+ * @param {string} signature - The signature to verify
+ * @param {string} [bodyText] - The raw request body string (highly recommended for correct order)
  */
-export async function verifySignature(postData, signature) {
+export async function verifySignature(postData, signature, bodyText) {
     try {
         const publicKey = await getSecret('myPos_publicKey');
         if (!publicKey) return false;
 
-        const dataWithoutSignature = { ...postData };
-        delete dataWithoutSignature.Signature;
+        let values = [];
+        if (bodyText) {
+            // Highly recommended: parse raw body to maintain exact parameter order
+            const params = new URLSearchParams(bodyText);
+            for (const [key, value] of params.entries()) {
+                if (key !== 'Signature') {
+                    values.push(value);
+                }
+            }
+        } else {
+            // Fallback for cases where raw body isn't passed
+            const dataWithoutSignature = { ...postData };
+            delete dataWithoutSignature.Signature;
 
-        const sortedKeys = Object.keys(dataWithoutSignature).sort();
-        const values = sortedKeys.map(key => dataWithoutSignature[key]);
+            const sortedKeys = Object.keys(dataWithoutSignature).sort();
+            values = sortedKeys.map(key => dataWithoutSignature[key]);
+        }
+
         const concString = values.join('-');
         const base64Data = Buffer.from(concString).toString('base64');
 
