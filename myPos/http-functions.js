@@ -395,18 +395,22 @@ export async function post_myposNotify(request) {
         const signature = postData.Signature;
         if (!signature) {
             console.error(`[myPOS Notify ${ts}] Missing signature`);
-            return response({ status: 200, body: 'FAIL' });
+            return response({
+                status: 200,
+                body: 'OK',
+                headers: { 'Content-Type': 'text/plain' }
+            });
         }
 
         console.log(`[myPOS Notify ${ts}] Validating signature...`);
         const isValid = await verifySignature(postData, signature, bodyText);
-        console.log(`[myPOS Notify ${ts}] Signature Valid:`, isValid);
+        console.log(`[myPOS Notify ${ts}] Signature Valid: ${isValid}`);
 
         if (!isValid) {
             console.error(`[myPOS Notify ${ts}] Invalid signature detected`);
             return response({
                 status: 200,
-                body: 'FAIL',
+                body: 'OK',
                 headers: { 'Content-Type': 'text/plain' }
             });
         }
@@ -448,62 +452,50 @@ export async function post_myposNotify(request) {
         // 4. Merchant Logic: Verify Order and Update Status
         let eventId;
         try {
-            console.log(`[myPOS Notify ${ts}] Looking up order in Events/Orders: ${orderId}`);
-            const orderRecord = await wixData.get("Events/Orders", orderId);
-            if (orderRecord) {
-                console.log(`[myPOS Notify ${ts}] Order record found:`, JSON.stringify(orderRecord));
+            console.log(`[myPOS Notify ${ts}] Looking up order: ${orderId}`);
+
+            // Try query by orderNumber FIRST (most likely case for 3003-7SP2-SP8 format)
+            const orderResults = await wixData.query("Events/Orders")
+                .contains("orderNumber", orderId) // Use contains as it's often more supported on string-like IDs in Wix Apps
+                .limit(1)
+                .find();
+
+            if (orderResults.items.length > 0) {
+                const orderRecord = orderResults.items[0];
+                console.log(`[myPOS Notify ${ts}] Order found via query:`, JSON.stringify(orderRecord));
                 eventId = orderRecord.eventId;
-
-                // Verify Amount and Currency
-                const receivedAmount = Number(amount).toFixed(2);
-                const expectedAmount = Number(orderRecord.totalAmount || 0).toFixed(2);
-                console.log(`[myPOS Notify ${ts}] Amount Check - Received: ${receivedAmount}, Expected: ${expectedAmount}`);
-
-                if (receivedAmount !== expectedAmount) {
-                    console.warn(`[myPOS Notify ${ts}] Amount mismatch for order ${orderId}`);
-                }
             } else {
-                console.warn(`[myPOS Notify ${ts}] No record found in Events/Orders for ID: ${orderId}`);
+                // Try direct GET by ID as fallback
+                try {
+                    const orderRecord = await wixData.get("Events/Orders", orderId);
+                    if (orderRecord) {
+                        console.log(`[myPOS Notify ${ts}] Order found via direct GET:`, JSON.stringify(orderRecord));
+                        eventId = orderRecord.eventId;
+                    }
+                } catch (getError) {
+                    console.log(`[myPOS Notify ${ts}] Direct GET failed, maybe not a UUID.`);
+                }
             }
         } catch (e) {
-            console.error(`[myPOS Notify ${ts}] Error during Events/Orders lookup:`, e.message);
+            console.error(`[myPOS Notify ${ts}] Error resolving orderId to eventId:`, e.message);
         }
 
-        if (!eventId) {
-            console.log(`[myPOS Notify ${ts}] Attempting fallback Tickets lookup for orderNumber: ${orderId}`);
-            const ticketResults = await wixData.query("Events/Tickets")
-                .eq("orderNumber", orderId)
-                .find();
-            if (ticketResults.items.length > 0) {
-                eventId = ticketResults.items[0].event;
-                console.log(`[myPOS Notify ${ts}] Fallback successful. Resolved EventID: ${eventId}`);
-            } else {
-                console.error(`[myPOS Notify ${ts}] Fallback failed. No tickets found for orderNumber: ${orderId}`);
-            }
-        }
+        if (eventId) {
+            // 5. Confirm the Order in Wix
+            console.log(`[myPOS Notify ${ts}] Confirming order in Wix for event: ${eventId}, order: ${orderId}`);
+            const confirmOptions = { orderNumber: [orderId] };
+            const confirmResult = await confirmOrder(eventId, confirmOptions);
 
-        if (!eventId) {
-            console.error(`[myPOS Notify ${ts}] Final resolve failed: Could not determine eventId`);
-            // We still return OK to myPOS to acknowledge reception, even if we failed to process it locally
-            return response({
-                status: 200,
-                body: 'OK',
-                headers: { 'Content-Type': 'text/plain' }
+            console.log(`[myPOS Notify ${ts}] Order confirmation successful:`, JSON.stringify(confirmResult));
+
+            await wixData.insert('logs', {
+                phase: 'mypos_notify_success',
+                data: { orderId, eventId, confirmResult },
+                ts
             });
+        } else {
+            console.error(`[myPOS Notify ${ts}] Final resolve failed: Could not determine eventId for OrderID: ${orderId}`);
         }
-
-        // 5. Confirm the Order in Wix
-        console.log(`[myPOS Notify ${ts}] Confirming order in Wix for event: ${eventId}, order: ${orderId}`);
-        const confirmOptions = { orderNumber: [orderId] };
-        const confirmResult = await confirmOrder(eventId, confirmOptions);
-
-        console.log(`[myPOS Notify ${ts}] Order confirmation successful:`, JSON.stringify(confirmResult));
-
-        await wixData.insert('logs', {
-            phase: 'mypos_notify_success',
-            data: { orderId, eventId, confirmResult },
-            ts
-        });
 
         // 6. Respond with OK (Strictly plain text as per myPOS requirements)
         return response({
@@ -521,7 +513,7 @@ export async function post_myposNotify(request) {
         });
         return response({
             status: 200,
-            body: 'FAIL',
+            body: 'OK',
             headers: { 'Content-Type': 'text/plain' }
         });
     }
