@@ -3,10 +3,10 @@ import * as paymentProvider from 'interfaces-psp-v1-payment-service-provider';
 /** @returns {import('interfaces-psp-v1-payment-service-provider').PaymentServiceProviderConfig} */
 export function getConfig() {
     return {
-        title: 'myPOS Payments',
+        title: 'Cartão, Apple Pay e Google Pay',
         paymentMethods: [{
             hostedPage: {
-                title: 'myPOS Payments',
+                title: 'Cartão, Apple Pay e Google Pay',
                 billingAddressMandatoryFields: [],
                 // logos: {
                 //     white: {

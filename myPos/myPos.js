@@ -196,7 +196,7 @@ export const createTransaction = async (options, context) => {
     const paymentData = {
         amount: Number(amount),
         currency: 'EUR',
-        orderid: shortId,
+        orderid: `${shortId}:${eventId}`,
         customeremail: email,
         customerfirstnames: firstName,
         customerfamilyname: lastName,
@@ -205,7 +205,7 @@ export const createTransaction = async (options, context) => {
         customercity: city,
         customerzipcode: zipCode,
         customeraddress: address,
-        note: eventId,
+        note: description,
         url_ok: 'https://www.live-ls.com/_functions/myposOk',
         url_cancel: 'https://www.live-ls.com/_functions/myposCancel',
         cartitems: cartitems
