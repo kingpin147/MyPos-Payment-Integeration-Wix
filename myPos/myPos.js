@@ -205,7 +205,7 @@ export const createTransaction = async (options, context) => {
         customercity: city,
         customerzipcode: zipCode,
         customeraddress: address,
-        note: description,
+        note: eventId,
         url_ok: 'https://www.live-ls.com/_functions/myposOk',
         url_cancel: 'https://www.live-ls.com/_functions/myposCancel',
         cartitems: cartitems

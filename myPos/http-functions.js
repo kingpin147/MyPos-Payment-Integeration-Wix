@@ -450,34 +450,41 @@ export async function post_myposNotify(request) {
         }
 
         // 4. Merchant Logic: Verify Order and Update Status
-        let eventId;
-        try {
-            console.log(`[myPOS Notify ${ts}] Looking up order: ${orderId}`);
+        let eventId = postData.Note;
+        const isValidUUID = (id) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id);
 
-            // Try query by orderNumber FIRST (most likely case for 3003-7SP2-SP8 format)
-            const orderResults = await wixData.query("Events/Orders")
-                .contains("orderNumber", orderId) // Use contains as it's often more supported on string-like IDs in Wix Apps
-                .limit(1)
-                .find();
+        if (eventId && isValidUUID(eventId)) {
+            console.log(`[myPOS Notify ${ts}] EventId extracted from Note: ${eventId}`);
+        } else {
+            console.warn(`[myPOS Notify ${ts}] No valid eventId in Note field, falling back to lookup for order: ${orderId}`);
+            try {
+                console.log(`[myPOS Notify ${ts}] Looking up order: ${orderId}`);
 
-            if (orderResults.items.length > 0) {
-                const orderRecord = orderResults.items[0];
-                console.log(`[myPOS Notify ${ts}] Order found via query:`, JSON.stringify(orderRecord));
-                eventId = orderRecord.eventId;
-            } else {
-                // Try direct GET by ID as fallback
-                try {
-                    const orderRecord = await wixData.get("Events/Orders", orderId);
-                    if (orderRecord) {
-                        console.log(`[myPOS Notify ${ts}] Order found via direct GET:`, JSON.stringify(orderRecord));
-                        eventId = orderRecord.eventId;
+                // Try query by orderNumber FIRST (most likely case for 3003-7SP2-SP8 format)
+                const orderResults = await wixData.query("Events/Orders")
+                    .contains("orderNumber", orderId)
+                    .limit(1)
+                    .find();
+
+                if (orderResults.items.length > 0) {
+                    const orderRecord = orderResults.items[0];
+                    console.log(`[myPOS Notify ${ts}] Order found via query:`, JSON.stringify(orderRecord));
+                    eventId = orderRecord.eventId;
+                } else {
+                    // Try direct GET by ID as fallback
+                    try {
+                        const orderRecord = await wixData.get("Events/Orders", orderId);
+                        if (orderRecord) {
+                            console.log(`[myPOS Notify ${ts}] Order found via direct GET:`, JSON.stringify(orderRecord));
+                            eventId = orderRecord.eventId;
+                        }
+                    } catch (getError) {
+                        console.log(`[myPOS Notify ${ts}] Direct GET failed, maybe not a UUID.`);
                     }
-                } catch (getError) {
-                    console.log(`[myPOS Notify ${ts}] Direct GET failed, maybe not a UUID.`);
                 }
+            } catch (e) {
+                console.error(`[myPOS Notify ${ts}] Error resolving orderId to eventId:`, e.message);
             }
-        } catch (e) {
-            console.error(`[myPOS Notify ${ts}] Error resolving orderId to eventId:`, e.message);
         }
 
         if (eventId) {
@@ -559,28 +566,36 @@ export async function post_myposOk(request) {
         }
 
         const orderId = postData.OrderID;
-        console.log(`[myPOS OK Redirect ${ts}] OrderID: ${orderId}`);
+        let eventId = postData.Note;
+        console.log(`[myPOS OK Redirect ${ts}] OrderID: ${orderId}, Note: ${eventId}`);
 
-        let eventId = '';
-        try {
-            console.log(`[myPOS OK Redirect ${ts}] Fetching order record for eventId resolve...`);
-            const orderRecord = await wixData.get("Events/Orders", orderId);
-            if (orderRecord && orderRecord.eventId) {
-                eventId = orderRecord.eventId;
-                console.log(`[myPOS OK Redirect ${ts}] Resolved via Orders: ${eventId}`);
+        const isValidUUID = (id) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id);
+
+        if (eventId && isValidUUID(eventId)) {
+            console.log(`[myPOS OK Redirect ${ts}] EventId extracted from Note: ${eventId}`);
+        } else {
+            console.log(`[myPOS OK Redirect ${ts}] No valid eventId in Note, trying lookup...`);
+            eventId = '';
+            try {
+                console.log(`[myPOS OK Redirect ${ts}] Fetching order record for eventId resolve...`);
+                const orderRecord = await wixData.get("Events/Orders", orderId);
+                if (orderRecord && orderRecord.eventId) {
+                    eventId = orderRecord.eventId;
+                    console.log(`[myPOS OK Redirect ${ts}] Resolved via Orders: ${eventId}`);
+                }
+            } catch (e) {
+                console.warn(`[myPOS OK Redirect ${ts}] Orders lookup failed: ${e.message}`);
             }
-        } catch (e) {
-            console.warn(`[myPOS OK Redirect ${ts}] Orders lookup failed: ${e.message}`);
-        }
 
-        if (!eventId) {
-            console.log(`[myPOS OK Redirect ${ts}] Trying fallback Tickets lookup...`);
-            const ticketResults = await wixData.query("Events/Tickets")
-                .eq("orderNumber", orderId)
-                .find();
-            if (ticketResults.items.length > 0) {
-                eventId = ticketResults.items[0].event;
-                console.log(`[myPOS OK Redirect ${ts}] Resolved via Tickets: ${eventId}`);
+            if (!eventId) {
+                console.log(`[myPOS OK Redirect ${ts}] Trying fallback Tickets lookup...`);
+                const ticketResults = await wixData.query("Events/Tickets")
+                    .eq("orderNumber", orderId)
+                    .find();
+                if (ticketResults.items.length > 0) {
+                    eventId = ticketResults.items[0].event;
+                    console.log(`[myPOS OK Redirect ${ts}] Resolved via Tickets: ${eventId}`);
+                }
             }
         }
 
@@ -588,14 +603,14 @@ export async function post_myposOk(request) {
         console.log(`[myPOS OK Redirect ${ts}] Final Redirecting to: ${thankYouUrl}`);
 
         return response({
-            status: 302,
+            status: 200,
             headers: { "Location": thankYouUrl }
         });
 
     } catch (error) {
         console.error(`[myPOS OK Redirect ${ts}] Critical Error:`, error.message);
         return response({
-            status: 302,
+            status: 200,
             headers: { "Location": "https://www.live-ls.com/thank-you?status=error" }
         });
     }
@@ -639,14 +654,14 @@ export async function post_myposCancel(request) {
         console.log(`[myPOS Cancel ${ts}] Redirecting user to: ${redirectUrl}`);
 
         return response({
-            status: 302,
+            status: 200,
             headers: { "Location": redirectUrl }
         });
 
     } catch (error) {
         console.error(`[myPOS Cancel ${ts}] Error:`, error.message);
         return response({
-            status: 302,
+            status: 200,
             headers: { "Location": "https://www.live-ls.com/" }
         });
     }
